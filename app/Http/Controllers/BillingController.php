@@ -87,36 +87,27 @@ class BillingController extends Controller
         $systemSetting = SystemSetting::firstOrNew(['id' => 1]);
 
         $services = $this->accountBillingController->getServices(get_user()->account_id);
-        $dataServiceId = 0;
+        $svgs = [];
+
         if ($accountDetails->company_id) {
             foreach ($services as $service) {
-                //save a call back to sonar if no label is here to find anyway
                 $trySvgPath = "public/assets/fcclabels/label_" . $service->id . "_" . $accountDetails->company_id . ".svg";
+
                 if (file_exists(base_path("{$trySvgPath}"))) {
                     $serviceDef = $this->systemController->getService($service->id);
                     if ($serviceDef->data_service) {
-                        $dataServiceId = $service->id;
+                        $svgPath = "/assets/fcclabels/label_" . $service->id . "_" . $accountDetails->company_id . ".svg";
+                        if (file_exists(base_path("public{$svgPath}"))) {
+                            $svgs[] = $svgPath;
+                        }
                     }
                 }
             }
-
-            $svgPath = "/assets/fcclabels/label_" . $dataServiceId . "_" . $accountDetails->company_id . ".svg";
-
-            if (file_exists(base_path("public{$svgPath}"))) {
-                $svgDisplay = "initial";
-                $svg = file_get_contents(base_path("public{$svgPath}"));
-            } else {
-                $svgDisplay = "none";
-                $svg = "";
-            }
-        } else {//must be using v1
-            $svgDisplay = "none";
-            $svg = "";
         }
 
         return view(
             'pages.billing.index',
-            compact('values', 'invoices', 'transactions', 'paymentMethods', 'systemSetting', 'svg', 'svgDisplay', 'contact')
+            compact('values', 'invoices', 'transactions', 'paymentMethods', 'systemSetting', 'svgs', 'contact')
         );
     }
 
@@ -493,7 +484,6 @@ class BillingController extends Controller
             );
         } catch (Exception $e) {
             Log::error($e);
-
             return redirect()->back()->withErrors(utrans('errors.failedToCreateBankAccount'))->withInput();
         }
 
@@ -878,12 +868,40 @@ class BillingController extends Controller
 
     private function createBankAccountObjectFromRequest(CreateBankAccountRequest $request): BankAccount
     {
+        $routingNumber = $this->getRoutingNumber($request);
+
         return new BankAccount([
             'name' => trim($request->input('name')),
             'type' => trim($request->input('account_type')),
             'account_number' => trim($request->input('account_number')),
-            'routing_number' => trim($request->input('routing_number')),
+            'routing_number' => $routingNumber,
         ]);
+    }
+
+    /**
+     * Get the routing number based on country format.
+     * For Canadian accounts, combines institution and transit numbers.
+     * For other countries, uses the standard routing number.
+     */
+    private function getRoutingNumber(CreateBankAccountRequest $request): string
+    {
+        if ($request->input('country') === 'CA') {
+            // Check if they provided a standard routing number (for US banks from Canada)
+            $standardRouting = trim($request->input('routing_number', ''));
+            if (!empty($standardRouting) && strlen($standardRouting) === 9) {
+                return $standardRouting;
+            }
+            
+            // Canadian format: 0 + institution number (3 digits) + transit number (5 digits)
+            $institutionNumber = str_pad($request->input('institution_number'), 3, '0', STR_PAD_LEFT);
+            $transitNumber = str_pad($request->input('transit_number'), 5, '0', STR_PAD_LEFT);
+            
+
+            // Routing number format: 0 + Institution Number (YYY) + Transit Number (XXXXX)
+            return '0' . $institutionNumber . $transitNumber;
+        }
+        
+        return trim($request->input('routing_number'));
     }
 
     /**
